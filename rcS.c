@@ -126,6 +126,7 @@ static void q_initd_complete(struct runqueue *q, struct runqueue_task *p)
 	ustream_free(&s->fd.stream);
 	close(s->fd.fd.fd);
 	free(s);
+	service_wait_kick();
 }
 
 static bool find_runqueue_list_entry(struct list_head *list, const char *file, const char *param)
@@ -169,6 +170,7 @@ static void add_initd(struct runqueue *q, const char *file, const char *param)
 	strcpy(s->param, param);
 	strcpy(s->file, file);
 	runqueue_task_add(q, &s->proc.task, false);
+	service_wait_activity();
 }
 
 static int _rc(struct runqueue *q, const char *path, const char *file, const char *pattern, const char *param)
@@ -209,6 +211,17 @@ int rcS(const char *pattern, const char *param, void (*q_empty)(struct runqueue 
 int rc(const char *file, const char *param)
 {
 	return _rc(&r, init_d_path, file, "", param);
+}
+
+static bool runqueue_idle(struct runqueue *q)
+{
+	return list_empty(&q->tasks_active.list) &&
+	       list_empty(&q->tasks_inactive.list);
+}
+
+bool rc_idle(void)
+{
+	return runqueue_idle(&q) && runqueue_idle(&r);
 }
 
 static void r_empty(struct runqueue *q)

@@ -1,0 +1,11 @@
+#!/bin/sh
+
+deadline=$(( $(date +%s) + ${1:-120} ))
+prev=   
+while [ $(date +%s) -lt $deadline ]; do
+	s=$(ubus -t 65 call service wait '{"timeout":60000}' | jsonfilter -e @.generation) || exit 1
+	n=$(ubus -t 65 call network wait '{"timeout":60000}' | jsonfilter -e @.generation) || exit 1
+	[ "$s:$n" = "$prev" ] && exit 0
+	prev="$s:$n"
+done
+exit 1

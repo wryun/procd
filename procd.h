@@ -65,6 +65,10 @@ struct trigger;
 void trigger_event(const char *type, struct blob_attr *data);
 void trigger_add(struct blob_attr *rule, void *id);
 void trigger_del(void *id);
+bool trigger_idle(void);
+
+void service_wait_activity(void);
+void service_wait_kick(void);
 
 void watch_add(const char *_name, void *id);
 void watch_del(void *id);

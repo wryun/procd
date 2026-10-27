@@ -1298,6 +1298,7 @@ instance_timeout(struct uloop_timeout *t)
 			in->restart = true;
 			instance_signal(in, SIGTERM);
 			uloop_timeout_set(&in->timeout, instance_term_timeout(in) * 1000);
+			service_wait_activity();
 			return;
 		}
 
@@ -1430,6 +1431,8 @@ instance_exit_done(struct service_instance *in)
 		instance_start(in);
 		rc(in->srv->name, "running");
 	}
+
+	service_wait_kick();
 }
 
 static void
@@ -1545,6 +1548,7 @@ instance_stop(struct service_instance *in, bool halt)
 	in->respawn_next = 0;
 	instance_signal(in, SIGTERM);
 	uloop_timeout_set(&in->timeout, instance_term_timeout(in) * 1000);
+	service_wait_activity();
 }
 
 static void
@@ -1563,6 +1567,7 @@ instance_restart(struct service_instance *in, bool reload)
 	in->respawning = false;
 	instance_signal(in, SIGTERM);
 	uloop_timeout_set(&in->timeout, instance_term_timeout(in) * 1000);
+	service_wait_activity();
 }
 
 static void

@@ -95,6 +95,7 @@ static void trigger_command_complete(struct runqueue *q, struct runqueue_task *p
 
 	avl_delete(&trigger_pending, &cmd->avl);
 	free(cmd);
+	service_wait_kick();
 }
 
 static void trigger_command_run(struct runqueue *q, struct runqueue_task *t)
@@ -165,6 +166,7 @@ static void trigger_command_add(struct trigger *t, struct blob_attr *data)
 		/* Command currently running? */
 		if (!cmd->delay.pending) {
 			cmd->requeue = true;
+			service_wait_activity();
 			return;
 		}
 
@@ -185,6 +187,7 @@ static void trigger_command_add(struct trigger *t, struct blob_attr *data)
 	memcpy(cmd->data, data, blob_pad_len(data));
 	avl_insert(&trigger_pending, &cmd->avl);
 	uloop_timeout_set(&cmd->delay, t->timeout > 0 ? t->timeout : 1);
+	service_wait_activity();
 }
 
 static void rule_handle_command(struct json_script_ctx *ctx, const char *name,
@@ -284,6 +287,11 @@ void trigger_del(void *id)
 
 		trigger_free(t);
 	}
+}
+
+bool trigger_idle(void)
+{
+	return avl_is_empty(&trigger_pending);
 }
 
 static bool trigger_match(const char *event, const char *match)

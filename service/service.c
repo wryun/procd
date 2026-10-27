@@ -1189,6 +1189,143 @@ service_handle_watchdog(struct ubus_context *ctx, struct ubus_object *obj,
 	return UBUS_STATUS_OK;
 }
 
+enum {
+	SERVICE_WAIT_TIMEOUT,
+	__SERVICE_WAIT_MAX,
+};
+
+static const struct blobmsg_policy service_wait_policy[__SERVICE_WAIT_MAX] = {
+	[SERVICE_WAIT_TIMEOUT] = { "timeout", BLOBMSG_TYPE_INT32 },
+};
+
+#define SERVICE_WAIT_DEFAULT_TIMEOUT	30000
+
+struct service_waiter {
+	struct list_head list;
+	struct ubus_context *ctx;
+	struct ubus_request_data req;
+	struct uloop_timeout timeout;
+};
+
+static LIST_HEAD(service_waiters);
+static uint64_t service_generation;
+
+void
+service_wait_activity(void)
+{
+	service_generation++;
+}
+
+static bool
+service_tree_busy(struct avl_tree *tree)
+{
+	struct service_instance *in;
+	struct service *s;
+
+	avl_for_each_element(tree, s, avl)
+		vlist_for_each_element(&s->instances, in, node)
+			if (in->halt && (in->proc.pending || in->cgroup_timeout.pending))
+				return true;
+
+	return false;
+}
+
+/*
+ * Respawn backoff is deliberately not counted: a crash looping service
+ * would otherwise keep every waiter blocked until its timeout.
+ */
+static bool
+service_idle(void)
+{
+	return trigger_idle() && rc_idle() &&
+	       !service_tree_busy(&services) && !service_tree_busy(&containers);
+}
+
+static void
+service_wait_reply(struct ubus_context *ctx, struct ubus_request_data *req)
+{
+	blob_buf_init(&b, 0);
+	blobmsg_add_u64(&b, "generation", service_generation);
+	ubus_send_reply(ctx, req, b.head);
+}
+
+static void
+service_waiter_complete(struct service_waiter *w, int ret)
+{
+	if (ret == UBUS_STATUS_OK)
+		service_wait_reply(w->ctx, &w->req);
+	ubus_complete_deferred_request(w->ctx, &w->req, ret);
+	uloop_timeout_cancel(&w->timeout);
+	list_del(&w->list);
+	free(w);
+}
+
+static void
+service_waiter_timeout(struct uloop_timeout *t)
+{
+	struct service_waiter *w = container_of(t, struct service_waiter, timeout);
+
+	service_waiter_complete(w, UBUS_STATUS_TIMEOUT);
+}
+
+static void
+service_wait_check(struct uloop_timeout *t)
+{
+	struct service_waiter *w, *tmp;
+
+	if (!service_idle())
+		return;
+
+	list_for_each_entry_safe(w, tmp, &service_waiters, list)
+		service_waiter_complete(w, UBUS_STATUS_OK);
+}
+
+static struct uloop_timeout service_wait_check_timer = {
+	.cb = service_wait_check,
+};
+
+/* Deferred so callers can kick while their own state is mid-update. */
+void
+service_wait_kick(void)
+{
+	if (!list_empty(&service_waiters))
+		uloop_timeout_set(&service_wait_check_timer, 0);
+}
+
+static int
+service_handle_wait(struct ubus_context *ctx, struct ubus_object *obj,
+		    struct ubus_request_data *req, const char *method,
+		    struct blob_attr *msg)
+{
+	struct blob_attr *tb[__SERVICE_WAIT_MAX];
+	struct service_waiter *w;
+	int timeout = SERVICE_WAIT_DEFAULT_TIMEOUT;
+
+	blobmsg_parse(service_wait_policy, __SERVICE_WAIT_MAX, tb, blobmsg_data(msg), blobmsg_data_len(msg));
+	if (tb[SERVICE_WAIT_TIMEOUT])
+		timeout = blobmsg_get_u32(tb[SERVICE_WAIT_TIMEOUT]);
+
+	if (service_idle()) {
+		service_wait_reply(ctx, req);
+		return UBUS_STATUS_OK;
+	}
+
+	if (timeout <= 0)
+		return UBUS_STATUS_TIMEOUT;
+
+	w = calloc(1, sizeof(*w));
+	if (!w)
+		return UBUS_STATUS_UNKNOWN_ERROR;
+
+	w->ctx = ctx;
+	ubus_defer_request(ctx, req, &w->req);
+	w->timeout.cb = service_waiter_timeout;
+	uloop_timeout_set(&w->timeout, timeout);
+	list_add_tail(&w->list, &service_waiters);
+
+	return UBUS_STATUS_OK;
+}
+
 static struct ubus_method main_object_methods[] = {
 	UBUS_METHOD("set", service_handle_set, service_set_attrs),
 	UBUS_METHOD("add", service_handle_set, service_set_attrs),
@@ -1203,6 +1340,7 @@ static struct ubus_method main_object_methods[] = {
 	UBUS_METHOD("set_data", service_handle_set_data, set_data_policy),
 	UBUS_METHOD("state", service_handle_state, service_state_attrs),
 	UBUS_METHOD("watchdog", service_handle_watchdog, service_watchdog_policy),
+	UBUS_METHOD("wait", service_handle_wait, service_wait_policy),
 };
 
 static struct ubus_object_type main_object_type =
